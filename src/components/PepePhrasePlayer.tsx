@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { SPRITE_CONFIG, ANIMATION_CONFIG } from '../config/sprites';
 import { PEPE_PHRASES, getAllPhrases } from '../config/phrases';
-import { Play, Pause, SkipForward, SkipBack, Shuffle, Filter, Volume2 } from 'lucide-react';
+import { Play, Pause, Filter, Volume2, Mic, MicOff, MessageSquare } from 'lucide-react';
 
 interface VoiceInfo {
   voice: SpeechSynthesisVoice;
@@ -21,13 +21,14 @@ export default function PepePhrasePlayer() {
   const [speechRate, setSpeechRate] = useState(1);
   const [speechPitch, setSpeechPitch] = useState(1);
   const [speechVolume, setSpeechVolume] = useState(1);
+  const [currentPhrase, setCurrentPhrase] = useState<string>('');
+  const [activePhraseButton, setActivePhraseButton] = useState<string | null>(null);
   const [currentChunkIndex, setCurrentChunkIndex] = useState(0);
   const [totalChunks, setTotalChunks] = useState(0);
+  const [customText, setCustomText] = useState('');
+  const [showCustomInput, setShowCustomInput] = useState(false);
   
-  // Phrase player state
-  const [phrases, setPhrases] = useState<string[]>([]);
-  const [currentPhraseIndex, setCurrentPhraseIndex] = useState(0);
-  const [isShuffled, setIsShuffled] = useState(false);
+  // Category state
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedSubcategory, setSelectedSubcategory] = useState<string>('all');
   
@@ -115,7 +116,18 @@ export default function PepePhrasePlayer() {
       setVoices(voiceInfos);
       
       if (voiceInfos.length > 0 && !selectedVoice) {
-        setSelectedVoice(voiceInfos[0].voice);
+        // Try to find Daniel from United Kingdom
+        const danielVoice = voiceInfos.find(v => 
+          v.voice.name.toLowerCase().includes('daniel') && 
+          (v.country === 'United Kingdom' || v.language.includes('GB'))
+        );
+        
+        if (danielVoice) {
+          setSelectedVoice(danielVoice.voice);
+        } else {
+          // Fallback to first available voice
+          setSelectedVoice(voiceInfos[0].voice);
+        }
       }
     };
 
@@ -123,9 +135,6 @@ export default function PepePhrasePlayer() {
     if (synthRef.current.onvoiceschanged !== undefined) {
       synthRef.current.onvoiceschanged = loadVoices;
     }
-
-    // Initialize with all phrases
-    setPhrases(getAllPhrases());
     
     // Start blinking
     scheduleNextBlink();
@@ -136,33 +145,6 @@ export default function PepePhrasePlayer() {
       }
     };
   }, []);
-
-  // Filter phrases based on category
-  useEffect(() => {
-    let filteredPhrases: string[] = [];
-    
-    if (selectedCategory === 'all') {
-      filteredPhrases = getAllPhrases();
-    } else {
-      const category = PEPE_PHRASES[selectedCategory as keyof typeof PEPE_PHRASES];
-      if (category) {
-        if (selectedSubcategory === 'all') {
-          Object.values(category.phrases).forEach(phraseGroup => {
-            filteredPhrases.push(...phraseGroup);
-          });
-        } else if (category.phrases[selectedSubcategory]) {
-          filteredPhrases = [...category.phrases[selectedSubcategory]];
-        }
-      }
-    }
-    
-    if (isShuffled) {
-      filteredPhrases = [...filteredPhrases].sort(() => Math.random() - 0.5);
-    }
-    
-    setPhrases(filteredPhrases);
-    setCurrentPhraseIndex(0);
-  }, [selectedCategory, selectedSubcategory, isShuffled]);
 
   // Get filtered voices
   const getFilteredVoices = () => {
@@ -183,6 +165,26 @@ export default function PepePhrasePlayer() {
     return Array.from(countries).sort();
   };
 
+  // Get phrases for current category
+  const getCurrentPhrases = (): string[] => {
+    if (selectedCategory === 'all') {
+      return getAllPhrases();
+    }
+    
+    const category = PEPE_PHRASES[selectedCategory as keyof typeof PEPE_PHRASES];
+    if (!category) return [];
+    
+    if (selectedSubcategory === 'all') {
+      const allPhrases: string[] = [];
+      Object.values(category.phrases).forEach(phraseGroup => {
+        allPhrases.push(...phraseGroup);
+      });
+      return allPhrases;
+    }
+    
+    return category.phrases[selectedSubcategory] || [];
+  };
+
   // Blinking logic
   const scheduleNextBlink = () => {
     const nextBlinkIn = Math.random() * 
@@ -190,7 +192,8 @@ export default function PepePhrasePlayer() {
       ANIMATION_CONFIG.blinkInterval.min;
     
     blinkTimeoutRef.current = window.setTimeout(() => {
-      if (!isSpeaking) {
+      // Only blink if not speaking and on the default frame
+      if (!isSpeaking && currentFrame === SPRITE_CONFIG.sequences.sequence1[0]) {
         performBlink();
       }
       scheduleNextBlink();
@@ -293,14 +296,7 @@ export default function PepePhrasePlayer() {
       isProcessingQueueRef.current = false;
       setCurrentChunkIndex(0);
       setTotalChunks(0);
-      
-      // Auto-advance to next phrase
-      if (currentPhraseIndex < phrases.length - 1) {
-        setTimeout(() => {
-          nextPhrase();
-        }, 1000);
-      }
-      
+      setActivePhraseButton(null);
       return;
     }
 
@@ -364,16 +360,31 @@ export default function PepePhrasePlayer() {
 
   // Animate a specific chunk with precise timing
   const animateChunk = (chunkText: string) => {
-    const words = chunkText.split(/\s+/);
+    // Remove punctuation from chunk text for animation
+    const animationText = chunkText.replace(/[.!?;:,]/g, '').trim();
+    
+    // If only punctuation remains, don't animate
+    if (!animationText) return;
+    
+    const words = animationText.split(/\s+/);
     const sequence = SPRITE_CONFIG.sequences.sequence1;
     
     // Calculate syllables for this chunk
-    const syllableData = words.map(word => ({
-      word: word.replace(/[^\w]/g, ''),
-      syllables: countSyllables(word.replace(/[^\w]/g, ''))
-    }));
+    const syllableData = words
+      .map(word => {
+        const cleanWord = word.replace(/[^\w]/g, '');
+        return {
+          word: cleanWord,
+          syllables: cleanWord ? countSyllables(cleanWord) : 0
+        };
+      })
+      .filter(data => data.word.length > 0); // Filter out empty words
     
     const totalSyllables = syllableData.reduce((sum, data) => sum + data.syllables, 0);
+    
+    // If no syllables to animate, return early
+    if (totalSyllables === 0) return;
+    
     const estimatedDuration = (totalSyllables * 150) / speechRate; // ~150ms per syllable
     
     // Create animation timeline for this chunk
@@ -437,18 +448,26 @@ export default function PepePhrasePlayer() {
     animationRef.current = requestAnimationFrame(animate);
   };
 
-  // Play current phrase with chunking system
-  const playPhrase = (phraseText?: string) => {
-    const textToSpeak = phraseText || phrases[currentPhraseIndex];
-    if (!textToSpeak) return;
-
+  // Play phrase with chunking system
+  const playPhrase = (phrase: string) => {
     // Cancel any ongoing speech
     synthRef.current.cancel();
     
-    // Preprocess text to prevent reading punctuation aloud
-    let processedText = textToSpeak;
-    processedText = processedText.replace(/\.\s*$/g, ''); // Remove trailing period
-    processedText = processedText.replace(/\.\s+([A-Z])/g, ' $1'); // Remove periods before new sentences
+    // Preprocess text to prevent reading punctuation aloud and remove emojis
+    let processedText = phrase;
+    
+    // Remove emojis and other Unicode symbols
+    processedText = processedText.replace(/[\u{1F600}-\u{1F64F}]|[\u{1F300}-\u{1F5FF}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '');
+    
+    // Remove other common emojis that might be missed
+    processedText = processedText.replace(/[🐸🎯💎🚀✨⚡️🔥💪🏻👀🎭🌟💰🏆🎨🎪🎮🌈☀️🌙⭐️]/g, '');
+    
+    // Clean up extra spaces
+    processedText = processedText.replace(/\s+/g, ' ').trim();
+    
+    // Set current phrase and button state (with original text including emojis for display)
+    setCurrentPhrase(phrase);
+    setActivePhraseButton(phrase);
     
     // Reset state
     setIsSpeaking(true);
@@ -463,17 +482,7 @@ export default function PepePhrasePlayer() {
     processNextChunk();
   };
 
-  // Player controls
-  const togglePlayPause = () => {
-    if (isSpeaking) {
-      // Stop everything when clicking during speech
-      stopSpeaking();
-    } else {
-      // Start playing current phrase
-      playPhrase();
-    }
-  };
-
+  // Stop speaking
   const stopSpeaking = () => {
     // Stop speech synthesis
     synthRef.current.cancel();
@@ -484,6 +493,7 @@ export default function PepePhrasePlayer() {
     // Reset state
     setIsSpeaking(false);
     setCurrentFrame(SPRITE_CONFIG.sequences.sequence1[0]);
+    setActivePhraseButton(null);
     
     // Cancel animation
     if (animationRef.current) {
@@ -495,150 +505,125 @@ export default function PepePhrasePlayer() {
     currentChunkIndexRef.current = 0;
   };
 
-  const nextPhrase = () => {
-    stopSpeaking();
-    const nextIndex = (currentPhraseIndex + 1) % phrases.length;
-    setCurrentPhraseIndex(nextIndex);
-    setTimeout(() => playPhrase(phrases[nextIndex]), 100);
-  };
-
-  const previousPhrase = () => {
-    stopSpeaking();
-    const prevIndex = currentPhraseIndex === 0 ? phrases.length - 1 : currentPhraseIndex - 1;
-    setCurrentPhraseIndex(prevIndex);
-    setTimeout(() => playPhrase(phrases[prevIndex]), 100);
-  };
-
-  const toggleShuffle = () => {
-    setIsShuffled(!isShuffled);
-  };
+  const phrases = getCurrentPhrases();
 
   return (
     <div className="min-h-screen bg-black p-4">
       <div className="max-w-7xl mx-auto">
-        <div className="bg-gray-900/50 backdrop-blur-xl border border-purple-500/20 rounded-3xl shadow-2xl shadow-purple-500/10 p-8">
-          <h1 className="text-3xl font-bold text-center mb-8 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-600">
-            🐸 Pepe Phrase Player
+        {/* Header with Pepe */}
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold mb-6 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-600">
+            🐸 Pepe Soundboard
           </h1>
           
-          <div className="grid lg:grid-cols-2 gap-8">
-            {/* Left: Pepe Display */}
-            <div className="space-y-6">
-              <motion.div
-                className="relative w-80 h-80 mx-auto"
-                animate={{
-                  y: [0, -ANIMATION_CONFIG.floatAmplitude, 0],
-                }}
-                transition={{
-                  duration: ANIMATION_CONFIG.floatDuration / 1000,
-                  repeat: Infinity,
-                  ease: "easeInOut"
-                }}
-              >
-                <motion.div
-                  className="relative w-full h-full bg-gradient-to-br from-blue-500/20 to-purple-600/20 rounded-2xl p-8"
-                  animate={{
-                    scale: isSpeaking ? 1.05 : 1
-                  }}
-                  transition={{
-                    duration: 0.3
-                  }}
-                >
-                  {/* Base frame */}
-                  <img
-                    src={SPRITE_CONFIG.basePath + currentFrame}
-                    alt="Pepe"
+          {/* Centered Pepe */}
+          <motion.div
+            className="relative w-64 h-64 mx-auto mb-4"
+            animate={{
+              y: [0, -ANIMATION_CONFIG.floatAmplitude, 0],
+            }}
+            transition={{
+              duration: ANIMATION_CONFIG.floatDuration / 1000,
+              repeat: Infinity,
+              ease: "easeInOut"
+            }}
+          >
+            <motion.div
+              className="relative w-full h-full"
+              animate={{
+                scale: isSpeaking ? 1.05 : 1
+              }}
+              transition={{
+                duration: 0.3
+              }}
+            >
+              {/* Base frame */}
+              <img
+                src={SPRITE_CONFIG.basePath + currentFrame}
+                alt="Pepe"
+                className="w-full h-full object-contain"
+              />
+              
+              {/* Blink overlay */}
+              <AnimatePresence>
+                {isBlinking && SPRITE_CONFIG.blinkOverlays[currentFrame as keyof typeof SPRITE_CONFIG.blinkOverlays] && (
+                  <motion.img
+                    src={SPRITE_CONFIG.basePath + SPRITE_CONFIG.blinkOverlays[currentFrame as keyof typeof SPRITE_CONFIG.blinkOverlays]}
+                    alt="Eyes closed"
                     className="absolute inset-0 w-full h-full object-contain"
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    exit={{ opacity: 0 }}
+                    transition={{ duration: 0.1 }}
                   />
-                  
-                  {/* Blink overlay */}
-                  <AnimatePresence>
-                    {isBlinking && SPRITE_CONFIG.blinkOverlays[currentFrame as keyof typeof SPRITE_CONFIG.blinkOverlays] && (
-                      <motion.img
-                        src={SPRITE_CONFIG.basePath + SPRITE_CONFIG.blinkOverlays[currentFrame as keyof typeof SPRITE_CONFIG.blinkOverlays]}
-                        alt="Eyes closed"
-                        className="absolute inset-0 w-full h-full object-contain"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        transition={{ duration: 0.1 }}
-                      />
-                    )}
-                  </AnimatePresence>
-                </motion.div>
-              </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
+          </motion.div>
 
-              {/* Current Phrase Display */}
-              <div className="bg-gray-800/50 backdrop-blur border border-gray-700 rounded-2xl p-6">
-                <div className="text-center">
-                  <p className="text-sm text-gray-400 mb-2">
-                    Phrase {currentPhraseIndex + 1} of {phrases.length}
-                  </p>
-                  <p className="text-lg font-medium text-gray-100 min-h-[60px]">
-                    "{phrases[currentPhraseIndex] || 'Select a category to play phrases'}"
-                  </p>
+          {/* Current Phrase Display */}
+          {currentPhrase && (
+            <div className="max-w-md mx-auto bg-gray-800/50 backdrop-blur border border-gray-700 rounded-2xl p-4 mb-4">
+              <div className="flex items-start gap-2">
+                <div className={`mt-1 ${isSpeaking ? 'text-green-400' : 'text-gray-400'}`}>
+                  {isSpeaking ? <Mic size={16} /> : <MicOff size={16} />}
                 </div>
+                <p className="text-sm text-gray-100 flex-1">
+                  "{currentPhrase}"
+                </p>
               </div>
+            </div>
+          )}
+        </div>
 
-              {/* Chunk Progress */}
-              {isSpeaking && totalChunks > 0 && (
-                <div className="bg-blue-500/10 backdrop-blur border border-blue-500/20 p-3 rounded-lg">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-blue-400">Speaking Chunk</span>
-                    <span className="text-sm text-blue-300">{currentChunkIndex} of {totalChunks}</span>
-                  </div>
-                  <div className="w-full bg-gray-700 rounded-full h-2">
-                    <div 
-                      className="bg-gradient-to-r from-blue-500 to-purple-600 h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${(currentChunkIndex / totalChunks) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              )}
+        {/* Main Content */}
+        <div className="bg-gray-900/50 backdrop-blur-xl border border-purple-500/20 rounded-3xl shadow-2xl shadow-purple-500/10 p-8">
+          <div className="grid lg:grid-cols-3 gap-8">
+            {/* Left: Controls */}
+            <div className="space-y-6">
+              {/* Category Selection */}
+              <div className="bg-gray-800/50 backdrop-blur border border-gray-700 rounded-xl p-4 space-y-3">
+                <h3 className="font-semibold text-sm text-gray-100">Categories</h3>
+                
+                <select
+                  value={selectedCategory}
+                  onChange={(e) => {
+                    setSelectedCategory(e.target.value);
+                    setSelectedSubcategory('all');
+                  }}
+                  className="w-full p-2 bg-gray-900 border border-gray-600 rounded-lg focus:border-purple-500 focus:outline-none text-gray-100 text-sm"
+                >
+                  <option value="all">All Phrases</option>
+                  {Object.entries(PEPE_PHRASES).map(([key, category]) => (
+                    <option key={key} value={key}>
+                      {category.title}
+                    </option>
+                  ))}
+                </select>
 
-              {/* Player Controls */}
-              <div className="flex justify-center items-center gap-4">
-                <button
-                  onClick={previousPhrase}
-                  className="p-3 rounded-full bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 transition-all duration-200 hover:scale-105"
-                  disabled={phrases.length === 0}
-                >
-                  <SkipBack size={24} />
-                </button>
-                
-                <button
-                  onClick={togglePlayPause}
-                  className="p-4 rounded-full bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 text-white transition-all duration-200 hover:scale-105 shadow-lg shadow-purple-500/25"
-                  disabled={phrases.length === 0}
-                >
-                  {isSpeaking ? <StopCircle size={28} /> : <Play size={28} />}
-                </button>
-                
-                <button
-                  onClick={nextPhrase}
-                  className="p-3 rounded-full bg-gray-800 hover:bg-gray-700 border border-gray-700 text-gray-300 transition-all duration-200 hover:scale-105"
-                  disabled={phrases.length === 0}
-                >
-                  <SkipForward size={24} />
-                </button>
-                
-                <button
-                  onClick={toggleShuffle}
-                  className={`p-3 rounded-full border transition-all duration-200 hover:scale-105 ${
-                    isShuffled 
-                      ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white border-transparent shadow-lg shadow-purple-500/25' 
-                      : 'bg-gray-800 hover:bg-gray-700 border-gray-700 text-gray-300'
-                  }`}
-                >
-                  <Shuffle size={24} />
-                </button>
+                {selectedCategory !== 'all' && PEPE_PHRASES[selectedCategory as keyof typeof PEPE_PHRASES] && (
+                  <select
+                    value={selectedSubcategory}
+                    onChange={(e) => setSelectedSubcategory(e.target.value)}
+                    className="w-full p-2 bg-gray-900 border border-gray-600 rounded-lg focus:border-purple-500 focus:outline-none text-gray-100 text-sm"
+                  >
+                    <option value="all">All Subcategories</option>
+                    {Object.keys(PEPE_PHRASES[selectedCategory as keyof typeof PEPE_PHRASES].phrases).map(key => (
+                      <option key={key} value={key}>
+                        {key.charAt(0).toUpperCase() + key.slice(1)}
+                      </option>
+                    ))}
+                  </select>
+                )}
               </div>
 
               {/* Speech Controls */}
               <div className="space-y-3 bg-gray-800/50 backdrop-blur border border-gray-700 rounded-xl p-4">
+                <h3 className="font-semibold text-sm text-gray-100 mb-2">Voice Controls</h3>
+                
                 <div>
-                  <label className="flex items-center gap-2 text-sm font-medium text-gray-300 mb-1">
-                    <Volume2 size={16} />
+                  <label className="flex items-center gap-2 text-xs font-medium text-gray-300 mb-1">
+                    <Volume2 size={14} />
                     Speed: {speechRate.toFixed(1)}x
                   </label>
                   <input
@@ -648,12 +633,12 @@ export default function PepePhrasePlayer() {
                     step="0.1"
                     value={speechRate}
                     onChange={(e) => setSpeechRate(parseFloat(e.target.value))}
-                    className="w-full accent-purple-500"
+                    className="w-full accent-purple-500 h-1"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
+                  <label className="block text-xs font-medium text-gray-300 mb-1">
                     Pitch: {speechPitch.toFixed(1)}
                   </label>
                   <input
@@ -663,12 +648,12 @@ export default function PepePhrasePlayer() {
                     step="0.1"
                     value={speechPitch}
                     onChange={(e) => setSpeechPitch(parseFloat(e.target.value))}
-                    className="w-full accent-purple-500"
+                    className="w-full accent-purple-500 h-1"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
+                  <label className="block text-xs font-medium text-gray-300 mb-1">
                     Volume: {Math.round(speechVolume * 100)}%
                   </label>
                   <input
@@ -678,207 +663,162 @@ export default function PepePhrasePlayer() {
                     step="0.05"
                     value={speechVolume}
                     onChange={(e) => setSpeechVolume(parseFloat(e.target.value))}
-                    className="w-full accent-purple-500"
+                    className="w-full accent-purple-500 h-1"
                   />
                 </div>
-              </div>
-            </div>
 
-            {/* Right: Categories and Voice Selection */}
-            <div className="space-y-6">
-              {/* Category Selection */}
-              <div className="bg-gray-50 rounded-xl p-6">
-                <h3 className="font-semibold text-lg mb-4">Phrase Categories</h3>
-                
-                <div className="space-y-2">
-                  <label className="block text-sm font-medium text-gray-700">
-                    Category
-                  </label>
+                {/* Voice Selection */}
+                <div className="pt-2 border-t border-gray-700">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-xs font-medium text-gray-300">Voice</label>
+                    <button
+                      onClick={() => setShowVoiceFilters(!showVoiceFilters)}
+                      className="p-1 rounded bg-gray-700 hover:bg-gray-600 transition-colors"
+                    >
+                      <Filter size={12} />
+                    </button>
+                  </div>
+                  
+                  {showVoiceFilters && (
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <select
+                        value={genderFilter}
+                        onChange={(e) => setGenderFilter(e.target.value as any)}
+                        className="p-1 bg-gray-800 border border-gray-600 rounded text-xs text-gray-100"
+                      >
+                        <option value="all">All Genders</option>
+                        <option value="male">Male</option>
+                        <option value="female">Female</option>
+                      </select>
+                      
+                      <select
+                        value={countryFilter}
+                        onChange={(e) => setCountryFilter(e.target.value)}
+                        className="p-1 bg-gray-800 border border-gray-600 rounded text-xs text-gray-100"
+                      >
+                        <option value="all">All Countries</option>
+                        {getUniqueCountries().map(country => (
+                          <option key={country} value={country}>
+                            {country}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                  
                   <select
-                    value={selectedCategory}
+                    value={selectedVoice?.name || ''}
                     onChange={(e) => {
-                      setSelectedCategory(e.target.value);
-                      setSelectedSubcategory('all');
+                      const voice = voices.find(v => v.voice.name === e.target.value);
+                      if (voice) setSelectedVoice(voice.voice);
                     }}
-                    className="w-full p-2 border-2 border-gray-300 rounded-lg focus:border-green-500 focus:outline-none"
+                    className="w-full p-2 bg-gray-900 border border-gray-600 rounded-lg text-xs text-gray-100"
                   >
-                    <option value="all">All Phrases</option>
-                    {Object.entries(PEPE_PHRASES).map(([key, category]) => (
-                      <option key={key} value={key}>
-                        {category.title}
+                    {getFilteredVoices().map((voiceInfo) => (
+                      <option key={voiceInfo.voice.name} value={voiceInfo.voice.name}>
+                        {voiceInfo.voice.name}
                       </option>
                     ))}
                   </select>
                 </div>
-
-                {selectedCategory !== 'all' && PEPE_PHRASES[selectedCategory as keyof typeof PEPE_PHRASES] && (
-                  <div className="space-y-2 mt-4">
-                    <label className="block text-sm font-medium text-gray-700">
-                      Subcategory
-                    </label>
-                    <select
-                      value={selectedSubcategory}
-                      onChange={(e) => setSelectedSubcategory(e.target.value)}
-                      className="w-full p-2 border-2 border-gray-300 rounded-lg focus:border-green-500 focus:outline-none"
-                    >
-                      <option value="all">All Subcategories</option>
-                      {Object.keys(PEPE_PHRASES[selectedCategory as keyof typeof PEPE_PHRASES].phrases).map(key => (
-                        <option key={key} value={key}>
-                          {key.charAt(0).toUpperCase() + key.slice(1)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                <div className="mt-4 text-sm text-gray-600">
-                  {phrases.length} phrases loaded
-                </div>
               </div>
+            </div>
 
-              {/* Voice Selection with Filters */}
-              <div className="bg-gray-50 rounded-xl p-6">
+            {/* Right: Phrase Buttons */}
+            <div className="lg:col-span-2">
+              <div className="bg-gray-800/50 backdrop-blur border border-gray-700 rounded-xl p-6">
                 <div className="flex items-center justify-between mb-4">
-                  <h3 className="font-semibold text-lg">Voice Selection</h3>
-                  <button
-                    onClick={() => setShowVoiceFilters(!showVoiceFilters)}
-                    className="p-2 rounded-lg bg-white hover:bg-gray-100 transition-colors"
-                  >
-                    <Filter size={20} />
-                  </button>
-                </div>
-
-                {/* Voice Filters */}
-                {showVoiceFilters && (
-                  <div className="space-y-3 mb-4 p-4 bg-white rounded-lg">
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Gender
-                        </label>
-                        <select
-                          value={genderFilter}
-                          onChange={(e) => setGenderFilter(e.target.value as any)}
-                          className="w-full p-2 border border-gray-300 rounded-md text-sm"
-                        >
-                          <option value="all">All</option>
-                          <option value="male">Male</option>
-                          <option value="female">Female</option>
-                        </select>
-                      </div>
-                      
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                          Country
-                        </label>
-                        <select
-                          value={countryFilter}
-                          onChange={(e) => setCountryFilter(e.target.value)}
-                          className="w-full p-2 border border-gray-300 rounded-md text-sm"
-                        >
-                          <option value="all">All</option>
-                          {getUniqueCountries().map(country => (
-                            <option key={country} value={country}>
-                              {country}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    </div>
-                    
-                    <div className="text-xs text-gray-500">
-                      {getFilteredVoices().length} voices match filters
-                    </div>
-                  </div>
-                )}
-
-                {/* Voice List */}
-                <div className="space-y-2 max-h-64 overflow-y-auto">
-                  {getFilteredVoices().map((voiceInfo) => (
-                    <label
-                      key={voiceInfo.voice.name}
-                      className={`flex items-center p-3 rounded-lg cursor-pointer transition-colors ${
-                        selectedVoice?.name === voiceInfo.voice.name
-                          ? 'bg-green-100 border-2 border-green-500'
-                          : 'bg-white hover:bg-gray-100 border-2 border-transparent'
+                  <h3 className="font-semibold text-lg text-gray-100">
+                    Phrases ({phrases.length})
+                  </h3>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setShowCustomInput(!showCustomInput)}
+                      className={`px-3 py-1 rounded-lg text-sm transition-colors flex items-center gap-2 ${
+                        showCustomInput
+                          ? 'bg-purple-500 hover:bg-purple-600 text-white'
+                          : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
                       }`}
                     >
+                      <MessageSquare size={14} />
+                      Custom
+                    </button>
+                    {isSpeaking && (
+                      <button
+                        onClick={stopSpeaking}
+                        className="px-3 py-1 bg-red-500 hover:bg-red-600 text-white rounded-lg text-sm transition-colors flex items-center gap-2"
+                      >
+                        <Pause size={14} />
+                        Stop
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Custom Input */}
+                {showCustomInput && (
+                  <div className="mb-4 p-4 bg-gray-900/50 rounded-lg border border-gray-700">
+                    <div className="flex gap-2">
                       <input
-                        type="radio"
-                        name="voice"
-                        checked={selectedVoice?.name === voiceInfo.voice.name}
-                        onChange={() => setSelectedVoice(voiceInfo.voice)}
-                        className="sr-only"
+                        type="text"
+                        value={customText}
+                        onChange={(e) => setCustomText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && customText.trim()) {
+                            playPhrase(customText);
+                          }
+                        }}
+                        placeholder="Type anything for Pepe to say..."
+                        className="flex-1 px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-gray-100 placeholder-gray-400 focus:border-purple-500 focus:outline-none text-sm"
                       />
-                      <div className="flex-1">
-                        <div className="font-medium text-sm">
-                          {voiceInfo.voice.name}
+                      <button
+                        onClick={() => {
+                          if (customText.trim()) {
+                            playPhrase(customText);
+                          }
+                        }}
+                        disabled={!customText.trim() || isSpeaking}
+                        className="px-4 py-2 bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm transition-all flex items-center gap-2"
+                      >
+                        <Play size={14} />
+                        Speak
+                      </button>
+                    </div>
+                  </div>
+                )}
+                
+                {/* Phrase Grid */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 max-h-[600px] overflow-y-auto pr-2">
+                  {phrases.map((phrase, index) => (
+                    <motion.button
+                      key={`${selectedCategory}-${selectedSubcategory}-${index}`}
+                      onClick={() => playPhrase(phrase)}
+                      className={`p-3 rounded-lg border text-left transition-all duration-200 text-sm ${
+                        activePhraseButton === phrase
+                          ? 'bg-gradient-to-r from-blue-500 to-purple-600 border-transparent text-white shadow-lg shadow-purple-500/25'
+                          : 'bg-gray-900/50 border-gray-700 text-gray-300 hover:bg-gray-800 hover:border-purple-500/50'
+                      }`}
+                      whileHover={{ scale: 1.02 }}
+                      whileTap={{ scale: 0.98 }}
+                      disabled={isSpeaking && activePhraseButton !== phrase}
+                    >
+                      <div className="flex items-start gap-2">
+                        <div className={`mt-0.5 ${activePhraseButton === phrase ? 'text-white' : 'text-gray-500'}`}>
+                          <Play size={14} />
                         </div>
-                        <div className="text-xs text-gray-500">
-                          {voiceInfo.gender !== 'unknown' && (
-                            <span className="capitalize">{voiceInfo.gender} • </span>
-                          )}
-                          {voiceInfo.country} ({voiceInfo.language})
-                        </div>
+                        <span className="flex-1 line-clamp-2">
+                          {phrase}
+                        </span>
                       </div>
-                    </label>
+                    </motion.button>
                   ))}
                 </div>
-              </div>
-
-              {/* Quick Voice Presets */}
-              <div className="bg-blue-50 rounded-xl p-4">
-                <h4 className="font-medium text-sm mb-2">Quick Voice Presets</h4>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => {
-                      const maleVoices = voices.filter(v => v.gender === 'male');
-                      if (maleVoices.length > 0) {
-                        setSelectedVoice(maleVoices[0].voice);
-                        setGenderFilter('male');
-                      }
-                    }}
-                    className="p-2 text-sm bg-white rounded-lg hover:bg-gray-100"
-                  >
-                    🎩 Male Voice
-                  </button>
-                  <button
-                    onClick={() => {
-                      const femaleVoices = voices.filter(v => v.gender === 'female');
-                      if (femaleVoices.length > 0) {
-                        setSelectedVoice(femaleVoices[0].voice);
-                        setGenderFilter('female');
-                      }
-                    }}
-                    className="p-2 text-sm bg-white rounded-lg hover:bg-gray-100"
-                  >
-                    👗 Female Voice
-                  </button>
-                  <button
-                    onClick={() => {
-                      const usVoices = voices.filter(v => v.country === 'United States');
-                      if (usVoices.length > 0) {
-                        setSelectedVoice(usVoices[0].voice);
-                        setCountryFilter('United States');
-                      }
-                    }}
-                    className="p-2 text-sm bg-white rounded-lg hover:bg-gray-100"
-                  >
-                    🇺🇸 US English
-                  </button>
-                  <button
-                    onClick={() => {
-                      const ukVoices = voices.filter(v => v.country === 'United Kingdom');
-                      if (ukVoices.length > 0) {
-                        setSelectedVoice(ukVoices[0].voice);
-                        setCountryFilter('United Kingdom');
-                      }
-                    }}
-                    className="p-2 text-sm bg-white rounded-lg hover:bg-gray-100"
-                  >
-                    🇬🇧 UK English
-                  </button>
-                </div>
+                
+                {phrases.length === 0 && (
+                  <div className="text-center py-12 text-gray-500">
+                    No phrases available for the selected category
+                  </div>
+                )}
               </div>
             </div>
           </div>
